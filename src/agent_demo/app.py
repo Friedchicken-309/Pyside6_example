@@ -1,7 +1,9 @@
 import sys
-from agent_demo.llmclient import LLMClient
-from pathlib import Path
+import threading
 
+from agent_demo.llmclient import LLMClient, resource_path
+
+from PySide6.QtCore import QObject, Signal
 from PySide6.QtWidgets import (
     QApplication,
     QPlainTextEdit,
@@ -19,6 +21,26 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 from PySide6.QtWidgets import QSizePolicy
+
+
+class ChatWorker(QObject):
+    """在子线程里执行网络请求，结果通过信号送回 UI 线程。"""
+    finished = Signal(str)  # 请求成功，携带模型回复
+    failed = Signal(str)    # 请求失败，携带错误信息
+
+    def __init__(self, client: LLMClient, text: str) -> None:
+        super().__init__()
+        self.client = client
+        self.text = text
+
+    def run(self) -> None:
+        """这个方法在子线程里执行，不要在这里直接碰任何界面控件。"""
+        try:
+            response = self.client.chat(self.text)
+            self.finished.emit(response)  # 跨线程 emit 会自动排队到 UI 线程执行
+        except Exception as exc:
+            self.failed.emit(str(exc))
+
 
 class MainWindow(QMainWindow):
     #--- 界面的初始化---#
@@ -39,10 +61,10 @@ class MainWindow(QMainWindow):
         self.client = LLMClient()  # 挂到 self 上，槽函数才能访问
     #--- 功能选项布局---#
         
-        send_button = QPushButton("GO")
-        send_button.setFixedSize(100, 100)
-        function_options.addWidget(send_button)
-        send_button.clicked.connect(self.translate)
+        self.send_button = QPushButton("GO")
+        self.send_button.setFixedSize(100, 100)
+        function_options.addWidget(self.send_button)
+        self.send_button.clicked.connect(self.translate)
   
     #--- 功能选项布局---#
 
@@ -64,18 +86,29 @@ class MainWindow(QMainWindow):
     def translate(self) -> None:
         # 获取输入文本
         text = self.input_text.toPlainText()
-        # 发送请求
-        if text.strip():  # 检查输入是否为空（含纯空白）
-            response = self.client.chat(text)
-            # 显示输出文本
-            self.output_text.setPlainText(response)
+        if not text.strip():  # 检查输入是否为空（含纯空白）
+            return
+        # UI 线程只负责发起：禁用按钮，立即返回，界面不卡
+        self.send_button.setEnabled(False)
+        self.output_text.setPlainText("翻译中…")
 
+        self.worker = ChatWorker(self.client, text)  # 持有引用，防止子线程被垃圾回收
+        self.worker.finished.connect(self.on_chat_finished)
+        self.worker.failed.connect(self.on_chat_failed)
+        threading.Thread(target=self.worker.run, daemon=True).start()
 
+    def on_chat_finished(self, response: str) -> None:
+        """子线程完成后由信号触发，此时已在 UI 线程，可以安全操作控件。"""
+        self.output_text.setPlainText(response)
+        self.send_button.setEnabled(True)
+
+    def on_chat_failed(self, message: str) -> None:
+        self.output_text.setPlainText(f"请求失败：{message}")
+        self.send_button.setEnabled(True)
     #---槽函数---#
 
 
-BASE_DIR = Path(__file__).resolve().parent
-QSS_PATH = BASE_DIR / "style.qss"  # 与 llmclient.py 的 CONFIG_PATH 同款写法
+QSS_PATH = resource_path("style.qss")  # 开发时取源码目录，打包后取解压目录或 exe 旁
 
 def load_qss(path)-> str:
     with open(path, "r", encoding="utf-8") as f:

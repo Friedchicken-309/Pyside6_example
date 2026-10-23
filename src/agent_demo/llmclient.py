@@ -1,13 +1,27 @@
 import json
+import sys
 from pathlib import Path
+
 from openai import OpenAI
 
-CONFIG_PATH = Path(__file__).resolve().parents[2] / "config.json"  # 项目根目录下的 config.json
+
+def resource_path(name: str) -> Path:
+    """定位资源文件。
+
+    开发运行：取模块所在目录；
+    打包运行：优先 exe 旁边的同名文件（改配置不用重新打包），否则用打包进 exe 的副本。
+    """
+    if getattr(sys, "frozen", False):
+        beside_exe = Path(sys.executable).resolve().parent / name
+        if beside_exe.exists():
+            return beside_exe
+        return Path(sys._MEIPASS) / name  # PyInstaller 单文件运行时的解压目录
+    return Path(__file__).resolve().parent / name
 
 
 class LLMClient:
-    def __init__(self, config_path: Path = CONFIG_PATH) -> None:
-        config = self._load_config(config_path)
+    def __init__(self, config_path: Path | None = None) -> None:
+        config = self._load_config(config_path or resource_path("config.json"))
 
         # 获取API——KEY
         self.api_key = config.get("api_key")
